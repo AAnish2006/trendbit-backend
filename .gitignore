@@ -1,0 +1,45 @@
+# Python Bytecode & Cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual Environments
+venv/
+.venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# Environment variables & Sensitive Credentials (Live Supabase & Dodo Keys)
+.env
+.env.*
+!.env.example
+
+# Local SQLite Database files
+*.db
+*.sqlite
+*.sqlite3
+trendbit.db
+
+# Distribution & Package Builds
+build/
+dist/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Testing & Coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Logs
+*.log
+
+# Editor & OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
