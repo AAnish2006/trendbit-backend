@@ -111,6 +111,20 @@ async def get_checkout_status(session_id: str) -> Dict[str, Any]:
             return res.json()
         return {}
 
+async def get_payment_status(payment_id: str) -> Dict[str, Any]:
+    """
+    Checks the status of a live payment with Dodo Payments.
+    """
+    headers = {
+        "Authorization": f"Bearer {DODO_PAYMENTS_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        res = await client.get(f"{BASE_URL}/payments/{payment_id}", headers=headers)
+        if res.status_code == 200:
+            return res.json()
+        return {}
+
 def verify_webhook_event(raw_body: bytes, headers: Dict[str, str]) -> Dict[str, Any]:
     """
     Verifies Dodo Payments webhook signatures following the Standard Webhooks specification.

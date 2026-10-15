@@ -83,29 +83,57 @@ async def create_or_update_product(product_data: Dict[str, Any]) -> Optional[Dic
             logger.error(f"Error creating/updating product in Supabase: {e}")
     return None
 
-async def update_payment_success(session_id: str, bid_amount: Optional[float] = None) -> Optional[Dict[str, Any]]:
+async def update_payment_success(identifier: str, bid_amount: Optional[float] = None) -> Optional[Dict[str, Any]]:
     if not SUPABASE_URL or not SUPABASE_KEY:
         return None
 
-    url = f"{SUPABASE_URL}/rest/v1/products?payment_session_id=eq.{session_id}&select=*"
+    headers = get_headers()
     async with httpx.AsyncClient(timeout=10.0) as client:
         try:
-            res = await client.get(url, headers=get_headers())
-            if res.status_code == 200 and res.json():
-                product = res.json()[0]
+            # 1. Match by payment_session_id
+            res = await client.get(
+                f"{SUPABASE_URL}/rest/v1/products?payment_session_id=eq.{identifier}&select=*",
+                headers=headers
+            )
+            products = res.json() if res.status_code == 200 else []
+
+            # 2. If not found, match by app_id
+            if not products:
+                res = await client.get(
+                    f"{SUPABASE_URL}/rest/v1/products?app_id=eq.{identifier}&select=*",
+                    headers=headers
+                )
+                products = res.json() if res.status_code == 200 else []
+
+            # 3. If not found, match by primary key id
+            if not products:
+                res = await client.get(
+                    f"{SUPABASE_URL}/rest/v1/products?id=eq.{identifier}&select=*",
+                    headers=headers
+                )
+                products = res.json() if res.status_code == 200 else []
+
+            if products:
+                product = products[0]
                 update_payload = {"payment_status": "completed"}
                 if bid_amount and bid_amount > product.get("bid_amount", 0):
                     update_payload["bid_amount"] = bid_amount
                 
                 patch_url = f"{SUPABASE_URL}/rest/v1/products?id=eq.{product['id']}"
-                patch_res = await client.patch(patch_url, headers=get_headers(), json=update_payload)
+                patch_res = await client.patch(patch_url, headers=headers, json=update_payload)
                 if patch_res.status_code in (200, 204):
                     return product
         except Exception as e:
             logger.error(f"Error marking payment completed in Supabase: {e}")
     return None
 
-_has_app_clicks_table: Optional[bool] = None
+# In-memory cache + Supabase products table persistence (NO app_clicks logging table)
+_in_memory_clicks: Dict[str, int] = {}
+
+def get_live_app_clicks(product_id: str, app_id: Optional[str] = None) -> int:
+    pid_count = _in_memory_clicks.get(str(product_id), 0)
+    aid_count = _in_memory_clicks.get(str(app_id), 0) if app_id else 0
+    return max(pid_count, aid_count)
 
 async def record_app_click(
     product_id: str,
@@ -115,75 +143,42 @@ async def record_app_click(
     ip_address: Optional[str] = None
 ) -> int:
     """
-    Records an app click event:
-    1. Increments and persists 'clicks' in Supabase 'products' table.
-    2. Logs click in Supabase 'app_clicks' table.
-    3. Persists click in local SQLite 'app_clicks' table.
-    4. Returns updated click count.
+    Live WebSocket click tracking + products table counter:
+    - Increments live in-memory clicks for real-time WebSocket broadcast.
+    - Persists counter to Supabase 'products' table.
+    - NEVER creates or writes to 'app_clicks' table.
     """
-    global _has_app_clicks_table
-    updated_clicks = 1
-
-    if SUPABASE_URL and SUPABASE_KEY:
-        headers = get_headers()
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            try:
-                # 1. Fetch current product clicks
+    curr = get_live_app_clicks(product_id, app_id)
+    if curr == 0 and SUPABASE_URL and SUPABASE_KEY:
+        try:
+            async with httpx.AsyncClient(timeout=3.0) as client:
                 res = await client.get(
-                    f"{SUPABASE_URL}/rest/v1/products?id=eq.{product_id}&select=id,app_id,name,clicks",
-                    headers=headers
+                    f"{SUPABASE_URL}/rest/v1/products?id=eq.{product_id}&select=clicks",
+                    headers=get_headers()
                 )
                 if res.status_code == 200 and res.json():
-                    prod = res.json()[0]
-                    curr_clicks = prod.get("clicks") or 0
-                    updated_clicks = curr_clicks + 1
-                    if not app_id:
-                        app_id = prod.get("app_id")
-                    if not app_name:
-                        app_name = prod.get("name")
+                    curr = max(curr, int(res.json()[0].get("clicks") or 0))
+        except Exception:
+            pass
 
-                    # Persist incremented count in Supabase products
-                    await client.patch(
-                        f"{SUPABASE_URL}/rest/v1/products?id=eq.{product_id}",
-                        headers=headers,
-                        json={"clicks": updated_clicks}
-                    )
+    new_count = curr + 1
+    _in_memory_clicks[str(product_id)] = new_count
+    if app_id:
+        _in_memory_clicks[str(app_id)] = new_count
 
-                # 2. Insert detailed log into Supabase app_clicks table
-                if _has_app_clicks_table is not False:
-                    click_payload = {
-                        "product_id": str(product_id),
-                        "app_id": str(app_id) if app_id else "",
-                        "app_name": str(app_name) if app_name else "",
-                        "user_agent": (user_agent or "")[:255],
-                        "ip_address": (ip_address or "")[:64],
-                    }
-                    log_res = await client.post(
-                        f"{SUPABASE_URL}/rest/v1/app_clicks",
-                        headers=headers,
-                        json=click_payload
-                    )
-                    if log_res.status_code in (200, 201):
-                        _has_app_clicks_table = True
-                    elif log_res.status_code == 404:
-                        _has_app_clicks_table = False
-            except Exception as e:
-                logger.error(f"Error recording click in Supabase: {e}")
+    # Persist counter directly to Supabase products table (NO app_clicks rows)
+    if SUPABASE_URL and SUPABASE_KEY:
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                await client.patch(
+                    f"{SUPABASE_URL}/rest/v1/products?id=eq.{product_id}",
+                    headers=get_headers(),
+                    json={"clicks": new_count}
+                )
+        except Exception as e:
+            logger.warning(f"Error persisting product clicks: {e}")
 
-    # 3. Log in local database
-    try:
-        from database import record_local_click
-        record_local_click(
-            product_id=product_id,
-            app_id=app_id,
-            app_name=app_name,
-            user_agent=user_agent,
-            ip_address=ip_address
-        )
-    except Exception as e:
-        logger.warning(f"Local SQLite click log error: {e}")
-
-    return updated_clicks
+    return new_count
 
 async def increment_clicks(product_id: str) -> int:
     return await record_app_click(product_id=product_id)

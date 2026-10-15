@@ -7,12 +7,14 @@ ITUNES_LOOKUP_URL = "https://itunes.apple.com/lookup"
 
 def is_valid_app_store_url(url: str) -> bool:
     """
-    Strict validation to ensure only official Apple App Store URLs are accepted.
-    E.g. https://apps.apple.com/us/app/duolingo-learn-languages/id570060128
+    Validation to ensure official Apple App Store URLs or numeric App IDs are accepted.
+    E.g. https://apps.apple.com/us/app/duolingo-learn-languages/id570060128 or 570060128
     """
     if not url:
         return False
     url = url.strip()
+    if url.isdigit():
+        return True
     # Must be an http or https URL containing apps.apple.com or itunes.apple.com
     if not re.match(r'^https?://(apps|itunes)\.apple\.com/.*', url, re.IGNORECASE):
         return False
@@ -23,9 +25,11 @@ def is_valid_app_store_url(url: str) -> bool:
 
 def extract_app_id_from_url(url: str) -> Optional[str]:
     """
-    Extracts the Apple numeric ID from an official Apple App Store URL.
+    Extracts the Apple numeric ID from an official Apple App Store URL or numeric ID string.
     """
     url = url.strip()
+    if url.isdigit():
+        return url
     match = re.search(r'id(\d{6,14})', url)
     if match:
         return match.group(1)
@@ -33,15 +37,13 @@ def extract_app_id_from_url(url: str) -> Optional[str]:
 
 async def verify_ios_app(url: str, country: str = "us") -> Dict[str, Any]:
     """
-    Verifies that the provided input is a valid Apple App Store URL and fetches official metadata.
-    Raises ValueError with 'Invalid URL' message if not an App Store URL.
+    Verifies that the provided input is a valid Apple App Store URL or track ID and fetches official metadata.
     """
-    url = url.strip()
-    if not is_valid_app_store_url(url):
-        raise ValueError("Invalid URL. Only official Apple App Store URLs (https://apps.apple.com/...) are allowed.")
-
+    url = str(url).strip()
     app_id = extract_app_id_from_url(url)
     if not app_id:
+        if not is_valid_app_store_url(url):
+            raise ValueError("Invalid URL. Only official Apple App Store URLs (https://apps.apple.com/...) are allowed.")
         raise ValueError("Invalid URL. App ID could not be found in the App Store URL.")
 
     headers = {
