@@ -21,13 +21,14 @@ def get_headers() -> Dict[str, str]:
 
 async def fetch_active_products() -> List[Dict[str, Any]]:
     """
-    Fetches real products from Supabase ordered by bid_amount DESC, clicks DESC.
-    Excludes system records.
+    Fetches real products from Supabase that have completed payments.
+    Only products with payment_status in ('completed', 'paid', 'succeeded') are listed.
+    Ordered by bid_amount DESC, clicks DESC.
     """
     if not SUPABASE_URL or not SUPABASE_KEY:
         return []
 
-    url = f"{SUPABASE_URL}/rest/v1/products?payment_status=neq.__system_stats__&select=*&order=bid_amount.desc,clicks.desc,created_at.asc"
+    url = f"{SUPABASE_URL}/rest/v1/products?payment_status=in.(completed,paid,succeeded)&select=*&order=bid_amount.desc,clicks.desc,created_at.asc"
     
     async with httpx.AsyncClient(timeout=10.0) as client:
         try:
@@ -66,11 +67,20 @@ async def create_or_update_product(product_data: Dict[str, Any]) -> Optional[Dic
     async with httpx.AsyncClient(timeout=10.0) as client:
         try:
             if existing:
+                # If existing product is ALREADY active/completed, and a new checkout is initiated:
+                # Do NOT downgrade payment_status to 'pending' or overwrite active bid until payment succeeds!
+                if existing.get("payment_status") in ("completed", "paid", "succeeded") and product_data.get("payment_status") == "pending":
+                    patch_payload = {
+                        "payment_session_id": product_data.get("payment_session_id")
+                    }
+                else:
+                    patch_payload = product_data
+
                 url = f"{SUPABASE_URL}/rest/v1/products?id=eq.{existing['id']}"
-                res = await client.patch(url, headers=get_headers(), json=product_data)
+                res = await client.patch(url, headers=get_headers(), json=patch_payload)
                 if res.status_code in (200, 204):
-                    data = res.json() if res.text else [product_data]
-                    return data[0] if data else product_data
+                    data = res.json() if res.text else [patch_payload]
+                    return data[0] if data else patch_payload
             else:
                 url = f"{SUPABASE_URL}/rest/v1/products"
                 res = await client.post(url, headers=get_headers(), json=product_data)

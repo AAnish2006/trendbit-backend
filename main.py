@@ -24,9 +24,22 @@ app = FastAPI(
     version="2.0.0"
 )
 
+FRONTEND_URL = os.environ.get("FRONTEND_URL", "https://trendbit.lol").rstrip("/")
+DEFAULT_RETURN_URL = f"{FRONTEND_URL}/?payment=success"
+
+allowed_origins = [
+    "https://trendbit.lol",
+    "https://www.trendbit.lol",
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+]
+if FRONTEND_URL and FRONTEND_URL not in allowed_origins:
+    allowed_origins.append(FRONTEND_URL)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=allowed_origins,
+    allow_origin_regex=r"https://.*\.vercel\.app",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -322,7 +335,7 @@ class CheckoutRequest(BaseModel):
     bid_amount: float
     customer_email: Optional[str] = None
     customer_name: Optional[str] = None
-    return_url: Optional[str] = "http://localhost:3000/?payment=success"
+    return_url: Optional[str] = None
 
 @app.post("/api/payments/create-checkout")
 async def create_checkout(req: CheckoutRequest):
@@ -354,7 +367,7 @@ async def create_checkout(req: CheckoutRequest):
             track_id=apple_data["track_id"],
             customer_email=req.customer_email,
             customer_name=req.customer_name or apple_data["seller_name"],
-            return_url=req.return_url or "http://localhost:3000/?payment=success"
+            return_url=req.return_url or DEFAULT_RETURN_URL
         )
     except Exception as e:
         logger.error(f"Dodo checkout creation error: {e}")
@@ -453,7 +466,9 @@ async def verify_payment_status(
         status_data = await get_checkout_status(session_id)
         payment_status = status_data.get("status") or status_data.get("payment_status") or status
         if payment_status in ("succeeded", "completed", "paid"):
-            await supabase_client.update_payment_success(session_id)
+            meta = status_data.get("metadata", {})
+            bid_amount = float(meta.get("bid_amount", 0)) if meta.get("bid_amount") else None
+            await supabase_client.update_payment_success(session_id, bid_amount=bid_amount)
             await manager.broadcast({
                 "type": "LEADERBOARD_UPDATED",
                 "session_id": session_id
