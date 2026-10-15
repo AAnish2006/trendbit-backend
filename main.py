@@ -133,6 +133,17 @@ async def websocket_endpoint(websocket: WebSocket):
         manager.disconnect(websocket)
         await manager.broadcast_stats()
 
+# ----------------- Health Check & Status -----------------
+@app.get("/")
+@app.get("/health")
+async def health_check():
+    return {
+        "status": "healthy",
+        "service": "Trendbit API",
+        "timestamp": datetime.utcnow().isoformat(),
+        "active_users": manager.get_active_count()
+    }
+
 # ----------------- Real Visitor & Live Stats Endpoints -----------------
 @app.get("/api/stats")
 async def get_stats():
